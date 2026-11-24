@@ -1,15 +1,17 @@
 pub mod cipher;
 pub mod cli;
 pub mod error;
-pub mod format;
+mod format;
 
 use std::fs;
 use std::path::Path;
 
-use crate::cipher::{ChaCha20, Cipher, compute_tag, derive_keys, fill_random, verify_tag};
+use crate::cipher::{
+    ChaCha20, Cipher, NONCE_LEN, compute_tag, derive_keys, fill_random, verify_tag,
+};
 use crate::cli::{Command, Mode};
 use crate::error::{Error, Result};
-use crate::format::{Envelope, NONCE_LEN, SALT_LEN};
+use crate::format::{Envelope, SALT_LEN};
 
 // dispatches a parsed cli command through the configured cipher pipeline
 pub fn run(cmd: &Command) -> Result<()> {
@@ -23,8 +25,8 @@ pub fn run(cmd: &Command) -> Result<()> {
 // reads plaintext from disk, seals it into an envelope, and writes the result
 pub fn encrypt_file<C: Cipher>(
     cipher: &C,
-    input: &Path,
-    output: &Path,
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
     passphrase: &[u8],
 ) -> Result<()> {
     let plaintext = fs::read(input)?;
@@ -36,8 +38,8 @@ pub fn encrypt_file<C: Cipher>(
 // reads an envelope from disk, authenticates and decrypts it, and writes plaintext
 pub fn decrypt_file<C: Cipher>(
     cipher: &C,
-    input: &Path,
-    output: &Path,
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
     passphrase: &[u8],
 ) -> Result<()> {
     let raw = fs::read(input)?;
@@ -58,7 +60,7 @@ pub fn encrypt_bytes<C: Cipher>(
     fill_random(&mut nonce)?;
 
     let keys = derive_keys(passphrase, &salt);
-    let payload = cipher.apply(&keys.enc_key, &nonce, plaintext);
+    let payload = cipher.apply(&keys.enc_key, &nonce, plaintext)?;
 
     let mut envelope = Envelope {
         salt,
@@ -83,7 +85,7 @@ pub fn decrypt_bytes<C: Cipher>(cipher: &C, raw: &[u8], passphrase: &[u8]) -> Re
         return Err(Error::AuthenticationFailed);
     }
 
-    Ok(cipher.apply(&keys.enc_key, &envelope.nonce, &envelope.payload))
+    cipher.apply(&keys.enc_key, &envelope.nonce, &envelope.payload)
 }
 
 #[cfg(test)]

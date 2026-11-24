@@ -6,7 +6,7 @@ use rust_encrypt::run;
 
 // wires process arguments into the library pipeline and translates errors to exit codes
 fn main() -> ExitCode {
-    match parse_args(env::args()) {
+    match parse_args(env::args_os()) {
         Ok(Action::Help) => {
             println!("{}", usage());
             ExitCode::SUCCESS

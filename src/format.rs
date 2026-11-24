@@ -1,9 +1,9 @@
+use crate::cipher::NONCE_LEN;
 use crate::error::{Error, Result};
 
 pub const MAGIC: [u8; 4] = *b"RENC";
 pub const VERSION: u8 = 1;
 pub const SALT_LEN: usize = 16;
-pub const NONCE_LEN: usize = 12;
 pub const TAG_LEN: usize = 32;
 pub const HEADER_PREFIX_LEN: usize = 4 + 1 + SALT_LEN + NONCE_LEN;
 pub const HEADER_LEN: usize = HEADER_PREFIX_LEN + TAG_LEN;
@@ -18,6 +18,7 @@ pub struct Envelope {
 
 impl Envelope {
     // packs version metadata, salt, and nonce for header authentication
+    #[must_use]
     pub fn authenticated_header(&self) -> [u8; HEADER_PREFIX_LEN] {
         let mut out = [0u8; HEADER_PREFIX_LEN];
         out[0..4].copy_from_slice(&MAGIC);
@@ -28,6 +29,7 @@ impl Envelope {
     }
 
     // serializes the structured envelope into a flat byte buffer for storage
+    #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + self.payload.len());
         out.extend_from_slice(&self.authenticated_header());
