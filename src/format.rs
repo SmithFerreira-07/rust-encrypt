@@ -2,9 +2,9 @@ use crate::cipher::NONCE_LEN;
 use crate::error::{Error, Result};
 
 pub const MAGIC: [u8; 4] = *b"RENC";
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const SALT_LEN: usize = 16;
-pub const TAG_LEN: usize = 32;
+pub const TAG_LEN: usize = 16;
 pub const HEADER_PREFIX_LEN: usize = 4 + 1 + SALT_LEN + NONCE_LEN;
 pub const HEADER_LEN: usize = HEADER_PREFIX_LEN + TAG_LEN;
 
@@ -58,7 +58,7 @@ impl Envelope {
 
         salt.copy_from_slice(&bytes[5..21]);
         nonce.copy_from_slice(&bytes[21..33]);
-        tag.copy_from_slice(&bytes[33..65]);
+        tag.copy_from_slice(&bytes[33..HEADER_LEN]);
 
         Ok(Self {
             salt,

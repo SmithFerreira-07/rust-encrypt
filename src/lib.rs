@@ -6,16 +6,16 @@ mod format;
 use std::fs;
 use std::path::Path;
 
-use crate::cipher::{
-    ChaCha20, Cipher, NONCE_LEN, compute_tag, derive_keys, fill_random, verify_tag,
-};
+use zeroize::Zeroizing;
+
+use crate::cipher::{Aes256Gcm, Cipher, NONCE_LEN, derive_key, fill_random};
 use crate::cli::{Command, Mode};
-use crate::error::{Error, Result};
-use crate::format::{Envelope, SALT_LEN};
+use crate::error::Result;
+use crate::format::{Envelope, SALT_LEN, TAG_LEN};
 
 // dispatches a parsed cli command through the configured cipher pipeline
 pub fn run(cmd: &Command) -> Result<()> {
-    let engine = ChaCha20;
+    let engine = Aes256Gcm;
     match cmd.mode {
         Mode::Encrypt => encrypt_file(&engine, &cmd.input, &cmd.output, cmd.passphrase.as_bytes()),
         Mode::Decrypt => decrypt_file(&engine, &cmd.input, &cmd.output, cmd.passphrase.as_bytes()),
@@ -29,7 +29,7 @@ pub fn encrypt_file<C: Cipher>(
     output: impl AsRef<Path>,
     passphrase: &[u8],
 ) -> Result<()> {
-    let plaintext = fs::read(input)?;
+    let plaintext = Zeroizing::new(fs::read(input)?);
     let sealed = encrypt_bytes(cipher, &plaintext, passphrase)?;
     fs::write(output, sealed)?;
     Ok(())
@@ -43,12 +43,12 @@ pub fn decrypt_file<C: Cipher>(
     passphrase: &[u8],
 ) -> Result<()> {
     let raw = fs::read(input)?;
-    let plaintext = decrypt_bytes(cipher, &raw, passphrase)?;
-    fs::write(output, plaintext)?;
+    let plaintext = Zeroizing::new(decrypt_bytes(cipher, &raw, passphrase)?);
+    fs::write(output, &*plaintext)?;
     Ok(())
 }
 
-// derives per-message keys, encrypts bytes, and frames them with an auth tag
+// derives a per-message key, encrypts bytes with aead, and frames them into an envelope
 pub fn encrypt_bytes<C: Cipher>(
     cipher: &C,
     plaintext: &[u8],
@@ -59,64 +59,76 @@ pub fn encrypt_bytes<C: Cipher>(
     fill_random(&mut salt)?;
     fill_random(&mut nonce)?;
 
-    let keys = derive_keys(passphrase, &salt);
-    let payload = cipher.apply(&keys.enc_key, &nonce, plaintext)?;
-
+    let derived = derive_key(passphrase, &salt)?;
     let mut envelope = Envelope {
         salt,
         nonce,
-        tag: [0u8; format::TAG_LEN],
-        payload,
+        tag: [0u8; TAG_LEN],
+        payload: Vec::new(),
     };
     let header = envelope.authenticated_header();
-    envelope.tag = compute_tag(&keys.mac_key, &header, &envelope.payload);
+    let (payload, tag) = cipher.seal(&derived.key, &nonce, &header, plaintext)?;
+    envelope.payload = payload;
+    envelope.tag = tag;
 
     Ok(envelope.encode())
 }
 
-// parses a framed envelope, verifies its integrity tag, and recovers plaintext
+// parses a framed envelope, verifies its aead tag and header, and recovers plaintext
 pub fn decrypt_bytes<C: Cipher>(cipher: &C, raw: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
     let envelope = Envelope::decode(raw)?;
-    let keys = derive_keys(passphrase, &envelope.salt);
+    let derived = derive_key(passphrase, &envelope.salt)?;
     let header = envelope.authenticated_header();
-    let expected = compute_tag(&keys.mac_key, &header, &envelope.payload);
 
-    if !verify_tag(&expected, &envelope.tag) {
-        return Err(Error::AuthenticationFailed);
-    }
-
-    cipher.apply(&keys.enc_key, &envelope.nonce, &envelope.payload)
+    cipher.open(
+        &derived.key,
+        &envelope.nonce,
+        &header,
+        &envelope.payload,
+        &envelope.tag,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
 
     // checks end-to-end byte encryption and decryption across format and cipher layers
     #[test]
     fn roundtrips_sealed_bytes() {
         let plaintext = b"top secret architecture notes";
-        let sealed = encrypt_bytes(&ChaCha20, plaintext, b"hunter2").unwrap();
-        let recovered = decrypt_bytes(&ChaCha20, &sealed, b"hunter2").unwrap();
+        let sealed = encrypt_bytes(&Aes256Gcm, plaintext, b"hunter2").unwrap();
+        let recovered = decrypt_bytes(&Aes256Gcm, &sealed, b"hunter2").unwrap();
         assert_eq!(recovered.as_slice(), plaintext);
     }
 
     // checks that decrypting with the wrong passphrase fails before returning data
     #[test]
     fn rejects_wrong_passphrase() {
-        let sealed = encrypt_bytes(&ChaCha20, b"payload", b"right-key").unwrap();
-        let err = decrypt_bytes(&ChaCha20, &sealed, b"wrong-key").unwrap_err();
+        let sealed = encrypt_bytes(&Aes256Gcm, b"payload", b"right-key").unwrap();
+        let err = decrypt_bytes(&Aes256Gcm, &sealed, b"wrong-key").unwrap_err();
         assert!(matches!(err, Error::AuthenticationFailed));
     }
 
-    // checks that modifying a ciphertext byte trips envelope authentication
+    // checks that modifying a ciphertext byte trips aead authentication
     #[test]
     fn rejects_corrupted_ciphertext() {
-        let mut sealed = encrypt_bytes(&ChaCha20, b"payload", b"right-key").unwrap();
+        let mut sealed = encrypt_bytes(&Aes256Gcm, b"payload", b"right-key").unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0xff;
 
-        let err = decrypt_bytes(&ChaCha20, &sealed, b"right-key").unwrap_err();
+        let err = decrypt_bytes(&Aes256Gcm, &sealed, b"right-key").unwrap_err();
+        assert!(matches!(err, Error::AuthenticationFailed));
+    }
+
+    // checks that modifying an authenticated header byte trips aead authentication
+    #[test]
+    fn rejects_tampered_header() {
+        let mut sealed = encrypt_bytes(&Aes256Gcm, b"payload", b"right-key").unwrap();
+        sealed[5] ^= 0x01; // flip a bit in the salt
+
+        let err = decrypt_bytes(&Aes256Gcm, &sealed, b"right-key").unwrap_err();
         assert!(matches!(err, Error::AuthenticationFailed));
     }
 }

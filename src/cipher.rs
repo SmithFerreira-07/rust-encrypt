@@ -1,284 +1,206 @@
-use std::hint::black_box;
-use std::ptr;
-use std::sync::atomic::{Ordering, compiler_fence};
+use std::io;
+
+use aes_gcm::aead::{AeadInPlace, KeyInit};
+use aes_gcm::{Aes256Gcm as RawAes256Gcm, Key, Nonce, Tag};
+use argon2::{Algorithm, Argon2, Params, Version};
+use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
-use crate::format::{HEADER_PREFIX_LEN, SALT_LEN, TAG_LEN};
+use crate::format::{SALT_LEN, TAG_LEN};
 
 pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
-const CHACHA_CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
-const KDF_ROUNDS: u32 = 4096;
 
-pub(crate) struct DerivedKeys {
-    pub(crate) enc_key: [u8; KEY_LEN],
-    pub(crate) mac_key: [u8; KEY_LEN],
+// owasp-aligned argon2id parameters: 64 mib memory, 3 iterations, 1 lane
+const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
+const ARGON2_ITERATIONS: u32 = 3;
+const ARGON2_PARALLELISM: u32 = 1;
+
+pub(crate) struct DerivedKey {
+    pub(crate) key: [u8; KEY_LEN],
 }
 
-impl Drop for DerivedKeys {
-    // clears derived encryption and authentication keys when they leave scope
+impl Drop for DerivedKey {
+    // clears derived encryption key material when it leaves scope
     fn drop(&mut self) {
-        wipe(&mut self.enc_key);
-        wipe(&mut self.mac_key);
+        self.key.zeroize();
     }
 }
 
 pub trait Cipher {
-    // transforms plaintext or ciphertext using the cipher stream boundary
-    fn apply(&self, key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], data: &[u8]) -> Result<Vec<u8>>;
+    // encrypts plaintext and authenticates both ciphertext and associated data
+    fn seal(
+        &self,
+        key: &[u8; KEY_LEN],
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; TAG_LEN])>;
+
+    // verifies the authentication tag over aad and ciphertext before decrypting
+    fn open(
+        &self,
+        key: &[u8; KEY_LEN],
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8; TAG_LEN],
+    ) -> Result<Vec<u8>>;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct ChaCha20;
+pub struct Aes256Gcm;
 
-impl Cipher for ChaCha20 {
-    // xors input bytes against sequential chacha20 keystream blocks
-    fn apply(&self, key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], data: &[u8]) -> Result<Vec<u8>> {
-        let mut out = Vec::with_capacity(data.len());
-        let mut counter: u32 = 1;
+impl Cipher for Aes256Gcm {
+    // seals plaintext with aes-256-gcm and returns ciphertext alongside its 128-bit tag
+    fn seal(
+        &self,
+        key: &[u8; KEY_LEN],
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<(Vec<u8>, [u8; TAG_LEN])> {
+        let cipher = RawAes256Gcm::new(Key::<RawAes256Gcm>::from_slice(key));
+        let nonce = Nonce::from_slice(nonce);
+        let mut buffer = plaintext.to_vec();
 
-        for chunk in data.chunks(64) {
-            let block = chacha_block(key, counter, nonce);
-            for (plain, stream) in chunk.iter().zip(block.iter()) {
-                out.push(plain ^ stream);
-            }
-            counter = counter.checked_add(1).ok_or(Error::MessageTooLarge)?;
-        }
+        let tag = cipher
+            .encrypt_in_place_detached(nonce, aad, &mut buffer)
+            .map_err(|_| Error::MessageTooLarge)?;
 
-        Ok(out)
+        let mut tag_bytes = [0u8; TAG_LEN];
+        tag_bytes.copy_from_slice(tag.as_slice());
+        Ok((buffer, tag_bytes))
+    }
+
+    // authenticates aad and ciphertext with aes-256-gcm before returning plaintext
+    fn open(
+        &self,
+        key: &[u8; KEY_LEN],
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        ciphertext: &[u8],
+        tag: &[u8; TAG_LEN],
+    ) -> Result<Vec<u8>> {
+        let cipher = RawAes256Gcm::new(Key::<RawAes256Gcm>::from_slice(key));
+        let nonce = Nonce::from_slice(nonce);
+        let tag = Tag::from_slice(tag);
+        let mut buffer = ciphertext.to_vec();
+
+        cipher
+            .decrypt_in_place_detached(nonce, aad, &mut buffer, tag)
+            .map_err(|_| {
+                buffer.zeroize();
+                Error::AuthenticationFailed
+            })?;
+
+        Ok(buffer)
     }
 }
 
-// stretches a user passphrase and salt into separated encryption and mac keys
-#[must_use]
-pub(crate) fn derive_keys(passphrase: &[u8], salt: &[u8; SALT_LEN]) -> DerivedKeys {
-    let mut state = [0u8; KEY_LEN];
-    for (i, byte) in salt.iter().enumerate() {
-        state[i] = *byte;
-        state[i + SALT_LEN] = *byte ^ 0x5c;
-    }
-
-    let mut counter = 0u32;
-    for chunk in passphrase.chunks(NONCE_LEN) {
-        let mut nonce = [0u8; NONCE_LEN];
-        nonce[..chunk.len()].copy_from_slice(chunk);
-        absorb(&mut state, counter, &nonce);
-        counter = counter.wrapping_add(1);
-    }
-
-    let mut len_nonce = [0u8; NONCE_LEN];
-    let pass_len = u64::try_from(passphrase.len()).unwrap_or(u64::MAX);
-    len_nonce[..8].copy_from_slice(&pass_len.to_le_bytes());
-    absorb(&mut state, counter, &len_nonce);
-
-    for round in 0..KDF_ROUNDS {
-        let mut nonce = [0u8; NONCE_LEN];
-        nonce[..12].copy_from_slice(&salt[..12]);
-        absorb(&mut state, round, &nonce);
-    }
-
-    let enc_block = chacha_block(&state, 1, b"rust-enc-key");
-    let mac_block = chacha_block(&state, 2, b"rust-mac-key");
-    wipe(&mut state);
-
-    let mut enc_key = [0u8; KEY_LEN];
-    let mut mac_key = [0u8; KEY_LEN];
-    enc_key.copy_from_slice(&enc_block[..KEY_LEN]);
-    mac_key.copy_from_slice(&mac_block[..KEY_LEN]);
-
-    DerivedKeys { enc_key, mac_key }
-}
-
-// computes a keyed authentication tag over the envelope header and ciphertext
-#[must_use]
-pub(crate) fn compute_tag(
-    mac_key: &[u8; KEY_LEN],
-    header: &[u8; HEADER_PREFIX_LEN],
-    ciphertext: &[u8],
-) -> [u8; TAG_LEN] {
-    let mut state = *mac_key;
-    let mut counter = 0u32;
-
-    for chunk in header.chunks(NONCE_LEN) {
-        let mut nonce = [0u8; NONCE_LEN];
-        nonce[..chunk.len()].copy_from_slice(chunk);
-        absorb(&mut state, counter, &nonce);
-        counter = counter.wrapping_add(1);
-    }
-
-    for chunk in ciphertext.chunks(NONCE_LEN) {
-        let mut nonce = [0u8; NONCE_LEN];
-        nonce[..chunk.len()].copy_from_slice(chunk);
-        absorb(&mut state, counter, &nonce);
-        counter = counter.wrapping_add(1);
-    }
-
-    let mut domain = [0u8; NONCE_LEN];
-    let header_len = u32::try_from(header.len()).unwrap_or(u32::MAX);
-    let cipher_len = u64::try_from(ciphertext.len()).unwrap_or(u64::MAX);
-    domain[..4].copy_from_slice(&header_len.to_le_bytes());
-    domain[4..12].copy_from_slice(&cipher_len.to_le_bytes());
-    absorb(&mut state, counter, &domain);
-
-    let final_block = chacha_block(&state, u32::MAX, b"renc-tag-v01");
-    wipe(&mut state);
-
-    let mut tag = [0u8; TAG_LEN];
-    tag.copy_from_slice(&final_block[..TAG_LEN]);
-    tag
-}
-
-// compares two authentication tags in constant time to avoid timing leaks
-#[must_use]
-pub(crate) fn verify_tag(expected: &[u8; TAG_LEN], actual: &[u8; TAG_LEN]) -> bool {
-    let mut diff = 0u8;
-    for (a, b) in expected.iter().zip(actual.iter()) {
-        diff |= a ^ b;
-    }
-    black_box(diff) == 0
-}
-
-// reads fresh entropy from the operating system to seed salts and nonces
-#[cfg(unix)]
-pub(crate) fn fill_random(dest: &mut [u8]) -> Result<()> {
-    use std::fs::File;
-    use std::io::Read;
-
-    let mut urandom = File::open("/dev/urandom")?;
-    urandom.read_exact(dest)?;
-    Ok(())
-}
-
-// rejects unsupported platforms until a cross-platform entropy source is wired in
-#[cfg(not(unix))]
-pub(crate) fn fill_random(_dest: &mut [u8]) -> Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "os randomness requires a unix target in this scaffold",
+// stretches a user passphrase and salt into a 256-bit key using argon2id
+pub(crate) fn derive_key(passphrase: &[u8], salt: &[u8; SALT_LEN]) -> Result<DerivedKey> {
+    let params = Params::new(
+        ARGON2_MEMORY_KIB,
+        ARGON2_ITERATIONS,
+        ARGON2_PARALLELISM,
+        Some(KEY_LEN),
     )
-    .into())
+    .map_err(|_| Error::KeyDerivationFailed)?;
+
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; KEY_LEN];
+    argon2
+        .hash_password_into(passphrase, salt, &mut key)
+        .map_err(|_| {
+            key.zeroize();
+            Error::KeyDerivationFailed
+        })?;
+
+    Ok(DerivedKey { key })
 }
 
-// overwrites sensitive byte buffers with volatile stores to prevent elision
+// reads fresh entropy from the operating system csprng to seed salts and nonces
+pub(crate) fn fill_random(dest: &mut [u8]) -> Result<()> {
+    getrandom::fill(dest).map_err(|err| io::Error::other(err.to_string()).into())
+}
+
+// overwrites sensitive byte buffers using zeroize to prevent compiler elision
 pub(crate) fn wipe(bytes: &mut [u8]) {
-    for byte in bytes {
-        unsafe {
-            ptr::write_volatile(byte, 0);
-        }
-    }
-    compiler_fence(Ordering::SeqCst);
-}
-
-// folds one block of input into the chaining key state via chacha20
-fn absorb(state: &mut [u8; KEY_LEN], counter: u32, nonce: &[u8; NONCE_LEN]) {
-    let block = chacha_block(state, counter, nonce);
-    for (slot, byte) in state.iter_mut().zip(block.iter()) {
-        *slot ^= *byte;
-    }
-}
-
-// produces one 64-byte chacha20 keystream block from key, counter, and nonce
-fn chacha_block(key: &[u8; KEY_LEN], counter: u32, nonce: &[u8; NONCE_LEN]) -> [u8; 64] {
-    let mut initial = [0u32; 16];
-    initial[0..4].copy_from_slice(&CHACHA_CONSTANTS);
-
-    let (key_words, _) = key.as_chunks::<4>();
-    for (slot, chunk) in initial[4..12].iter_mut().zip(key_words) {
-        *slot = u32::from_le_bytes(*chunk);
-    }
-
-    initial[12] = counter;
-
-    let (nonce_words, _) = nonce.as_chunks::<4>();
-    for (slot, chunk) in initial[13..16].iter_mut().zip(nonce_words) {
-        *slot = u32::from_le_bytes(*chunk);
-    }
-
-    let mut working = initial;
-    for _ in 0..10 {
-        quarter_round(&mut working, 0, 4, 8, 12);
-        quarter_round(&mut working, 1, 5, 9, 13);
-        quarter_round(&mut working, 2, 6, 10, 14);
-        quarter_round(&mut working, 3, 7, 11, 15);
-
-        quarter_round(&mut working, 0, 5, 10, 15);
-        quarter_round(&mut working, 1, 6, 11, 12);
-        quarter_round(&mut working, 2, 7, 8, 13);
-        quarter_round(&mut working, 3, 4, 9, 14);
-    }
-
-    let mut out = [0u8; 64];
-    let (out_chunks, _) = out.as_chunks_mut::<4>();
-    for ((slot, work), init) in out_chunks.iter_mut().zip(working).zip(initial) {
-        *slot = work.wrapping_add(init).to_le_bytes();
-    }
-    out
-}
-
-// mixes four state words in place as the core chacha20 arx primitive
-const fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
-    state[a] = state[a].wrapping_add(state[b]);
-    state[d] ^= state[a];
-    state[d] = state[d].rotate_left(16);
-
-    state[c] = state[c].wrapping_add(state[d]);
-    state[b] ^= state[c];
-    state[b] = state[b].rotate_left(12);
-
-    state[a] = state[a].wrapping_add(state[b]);
-    state[d] ^= state[a];
-    state[d] = state[d].rotate_left(8);
-
-    state[c] = state[c].wrapping_add(state[d]);
-    state[b] ^= state[c];
-    state[b] = state[b].rotate_left(7);
+    bytes.zeroize();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // validates the chacha20 block core against the rfc 8439 test vector
+    // validates aes-256-gcm against nist sp 800-38d test case 14
     #[test]
-    fn matches_rfc8439_block_vector() {
-        let key: [u8; KEY_LEN] = std::array::from_fn(|i| u8::try_from(i).unwrap());
-        let nonce = [
-            0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
+    fn matches_nist_aes256_gcm_vector() {
+        let key = [0u8; KEY_LEN];
+        let nonce = [0u8; NONCE_LEN];
+        let plaintext = [0u8; 16];
+
+        let (ciphertext, tag) = Aes256Gcm.seal(&key, &nonce, b"", &plaintext).unwrap();
+
+        let expected_ciphertext = [
+            0xce, 0xa7, 0x40, 0x3d, 0x4d, 0x60, 0x6b, 0x6e, 0x07, 0x4e, 0xc5, 0xd3, 0xba, 0xf3,
+            0x9d, 0x18,
+        ];
+        let expected_tag = [
+            0xd0, 0xd1, 0xc8, 0xa7, 0x99, 0x99, 0x6b, 0xf0, 0x26, 0x5b, 0x98, 0xb5, 0xd4, 0x8a,
+            0xb9, 0x19,
         ];
 
-        let block = chacha_block(&key, 1, &nonce);
-        let expected_prefix = [
-            0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15, 0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20,
-            0x71, 0xc4,
-        ];
-        assert_eq!(&block[..16], &expected_prefix);
+        assert_eq!(ciphertext.as_slice(), &expected_ciphertext);
+        assert_eq!(tag, expected_tag);
+
+        let recovered = Aes256Gcm
+            .open(&key, &nonce, b"", &ciphertext, &tag)
+            .unwrap();
+        assert_eq!(recovered.as_slice(), &plaintext);
     }
 
-    // confirms that stream encryption is symmetric for the same key and nonce
+    // confirms that aes-256-gcm roundtrips plaintext and binds associated data
     #[test]
-    fn roundtrips_stream_cipher() {
+    fn roundtrips_aead_cipher() {
         let key = [7u8; KEY_LEN];
         let nonce = [9u8; NONCE_LEN];
+        let aad = b"header-metadata";
         let plain = b"hello from rust-encrypt";
 
-        let encrypted = ChaCha20.apply(&key, &nonce, plain).unwrap();
+        let (encrypted, tag) = Aes256Gcm.seal(&key, &nonce, aad, plain).unwrap();
         assert_ne!(encrypted.as_slice(), plain);
 
-        let decrypted = ChaCha20.apply(&key, &nonce, &encrypted).unwrap();
+        let decrypted = Aes256Gcm.open(&key, &nonce, aad, &encrypted, &tag).unwrap();
         assert_eq!(decrypted.as_slice(), plain);
     }
 
-    // confirms that tag verification detects single-bit payload tampering
+    // confirms that modifying associated data or tag fails authentication
     #[test]
-    fn detects_tampered_tag() {
-        let keys = derive_keys(b"passphrase", &[4u8; SALT_LEN]);
-        let header = [5u8; HEADER_PREFIX_LEN];
-        let tag = compute_tag(&keys.mac_key, &header, b"payload");
-        assert!(verify_tag(&tag, &tag));
+    fn detects_tampered_aad_or_tag() {
+        let key = [3u8; KEY_LEN];
+        let nonce = [5u8; NONCE_LEN];
+        let (ciphertext, tag) = Aes256Gcm.seal(&key, &nonce, b"header", b"payload").unwrap();
 
-        let mut bad = tag;
-        bad[0] ^= 1;
-        assert!(!verify_tag(&tag, &bad));
+        let bad_aad = Aes256Gcm.open(&key, &nonce, b"tamper", &ciphertext, &tag);
+        assert!(matches!(bad_aad, Err(Error::AuthenticationFailed)));
+
+        let mut bad_tag = tag;
+        bad_tag[0] ^= 1;
+        let bad_tag_res = Aes256Gcm.open(&key, &nonce, b"header", &ciphertext, &bad_tag);
+        assert!(matches!(bad_tag_res, Err(Error::AuthenticationFailed)));
+    }
+
+    // confirms that argon2id key derivation is deterministic and salt-sensitive
+    #[test]
+    fn derives_deterministic_keys() {
+        let k1 = derive_key(b"passphrase", &[1u8; SALT_LEN]).unwrap();
+        let k2 = derive_key(b"passphrase", &[1u8; SALT_LEN]).unwrap();
+        let k3 = derive_key(b"passphrase", &[2u8; SALT_LEN]).unwrap();
+
+        assert_eq!(k1.key, k2.key);
+        assert_ne!(k1.key, k3.key);
     }
 
     // confirms that memory wiping clears every byte of a secret buffer

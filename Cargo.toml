@@ -5,3 +5,7 @@ edition = "2024"
 description = "minimal file encryption cli built around a pluggable cipher core"
 
 [dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+getrandom = "0.3"
+zeroize = "1"

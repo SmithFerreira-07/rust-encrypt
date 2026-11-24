@@ -11,6 +11,7 @@ pub enum Error {
     InvalidFormat(&'static str),
     AuthenticationFailed,
     MessageTooLarge,
+    KeyDerivationFailed,
 }
 
 impl fmt::Display for Error {
@@ -24,6 +25,7 @@ impl fmt::Display for Error {
                 write!(f, "authentication failed: wrong key or corrupted file")
             }
             Self::MessageTooLarge => write!(f, "message exceeds cipher block counter limit"),
+            Self::KeyDerivationFailed => write!(f, "key derivation failed"),
         }
     }
 }
