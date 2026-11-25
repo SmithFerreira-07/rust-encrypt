@@ -346,7 +346,7 @@ fn render_hints(frame: &mut Frame, area: Rect, app: &App) {
     let text = if app.is_working() {
         " working... · Esc quit"
     } else {
-        " Tab next · Enter run · ^M mode · ^T key · ^F feed · ^P pet · Esc quit"
+        " Tab next · Enter run · Esc quit"
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
