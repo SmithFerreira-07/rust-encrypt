@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -13,6 +11,9 @@ pub const ART_WIDTH: u16 = 30;
 pub const ART_HEIGHT: u16 = 6;
 
 const SPARKLES: [&str; 4] = ["✧", "·", "✦", "*"];
+const WORK_BYTES: [&str; 12] = [
+    "4f", "a3", "7c", "19", "e0", "b5", "28", "d1", "9a", "06", "f4", "6e",
+];
 const LEGS_SPLAYED: &str = "/_/ /   \\ \\_\\";
 const LEGS_STEPPING: &str = "|_| |   | |_|";
 
@@ -69,7 +70,7 @@ impl Gaze {
 
 struct FxGlyph {
     col: usize,
-    glyph: Cow<'static, str>,
+    glyph: &'static str,
     color: Color,
 }
 
@@ -89,12 +90,8 @@ struct Look {
 }
 
 impl Look {
-    fn fx(&mut self, col: usize, glyph: impl Into<Cow<'static, str>>, color: Color) {
-        self.fx.push(FxGlyph {
-            col,
-            glyph: glyph.into(),
-            color,
-        });
+    fn fx(&mut self, col: usize, glyph: &'static str, color: Color) {
+        self.fx.push(FxGlyph { col, glyph, color });
     }
 }
 
@@ -117,14 +114,6 @@ impl Default for Look {
     }
 }
 
-// stateless hash so idle quirks look organic without storing extra timers
-const fn mix(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    x ^ (x >> 31)
-}
-
 const fn pulse(tick: u64, period: u64) -> bool {
     (tick / period).is_multiple_of(2)
 }
@@ -132,7 +121,7 @@ const fn pulse(tick: u64, period: u64) -> bool {
 // quick blink every ~4s, with an occasional double blink
 const fn blinking(tick: u64) -> bool {
     let phase = tick % 52;
-    phase < 2 || (phase >= 4 && phase < 6 && mix(tick / 52).is_multiple_of(3))
+    phase < 2 || (phase >= 4 && phase < 6 && (tick / 52).is_multiple_of(3))
 }
 
 pub fn frame(mood: Mood, tick: u64) -> Vec<Line<'static>> {
@@ -251,21 +240,21 @@ fn idle_look(look: &mut Look, tick: u64) {
     if blinking(tick) {
         look.eyes = ["-", "-"];
     }
-    look.gaze = match mix(tick / 28) % 6 {
-        0 => Gaze::Left,
-        1 => Gaze::Right,
+    look.gaze = match (tick / 28) % 6 {
+        1 => Gaze::Left,
+        4 => Gaze::Right,
         _ => Gaze::Center,
     };
     if tick % 90 < 16 {
-        look.arms = match mix(tick / 90) % 4 {
+        look.arms = match (tick / 90) % 4 {
             0 => Arms::WaveLeft,
-            1 => Arms::WaveRight,
+            2 => Arms::WaveRight,
             _ => Arms::Down,
         };
         look.snap = pulse(tick, 3);
     }
-    look.scuttle = mix(tick / 40).is_multiple_of(5) && pulse(tick, 3);
-    if mix(tick / 70).is_multiple_of(4) {
+    look.scuttle = (tick / 40).is_multiple_of(5) && pulse(tick, 3);
+    if (tick / 70).is_multiple_of(4) {
         let sway = pulse(tick, 5);
         let note = if sway { "♪" } else { "♫" };
         look.fx(22 + usize::from(sway), note, NOTE);
@@ -280,16 +269,17 @@ fn working_look(look: &mut Look, tick: u64) {
     look.snap = !pulse(tick, 2);
     look.scuttle = pulse(tick, 2);
 
-    for slot in 0..9u64 {
-        let roll = mix(slot + (tick / 2) * 16);
-        if roll.is_multiple_of(3) {
-            let col = usize::try_from(1 + slot * 3).unwrap_or(0);
-            let color = if roll.is_multiple_of(2) {
+    let step = usize::try_from(tick / 2).unwrap_or(0);
+    for slot in 0..9usize {
+        if (slot + step).is_multiple_of(3) {
+            let col = 1 + slot * 3;
+            let color = if (slot + step).is_multiple_of(2) {
                 WARM_AMBER
             } else {
                 BYTES_DIM
             };
-            look.fx(col, format!("{:02x}", (roll >> 8) & 0xff), color);
+            let byte = WORK_BYTES[(slot * 5 + step) % WORK_BYTES.len()];
+            look.fx(col, byte, color);
         }
     }
 }

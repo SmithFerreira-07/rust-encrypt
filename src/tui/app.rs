@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use zeroize::Zeroizing;
 
-use crate::cipher::Aes256Gcm;
 use crate::cli::Mode;
 use crate::error::Result;
 use crate::{decrypt_file, encrypt_file};
@@ -260,10 +259,9 @@ impl App {
 
         thread::spawn(move || {
             let started = Instant::now();
-            let engine = Aes256Gcm;
             let op = match mode {
-                Mode::Encrypt => encrypt_file(&engine, &input_path, &output_path, &passphrase),
-                Mode::Decrypt => decrypt_file(&engine, &input_path, &output_path, &passphrase),
+                Mode::Encrypt => encrypt_file(&input_path, &output_path, &passphrase),
+                Mode::Decrypt => decrypt_file(&input_path, &output_path, &passphrase),
             };
             drop(passphrase);
 

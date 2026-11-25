@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::cli::Mode;
 
@@ -77,36 +77,17 @@ impl Mood {
     }
 }
 
-struct Rng(u64);
+fn random_u64() -> u64 {
+    getrandom::u64().unwrap_or(0)
+}
 
-impl Rng {
-    fn from_clock() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0x9e37_79b9_7f4a_7c15, |d| {
-                d.as_secs() ^ (u64::from(d.subsec_nanos()) << 32)
-            });
-        // xorshift64 stalls at 0, so keep the low bit set
-        Self(seed | 1)
-    }
-
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-
-    fn pick(&mut self, lines: &[&'static str], avoid: &str) -> &'static str {
-        let len = lines.len();
-        let idx = usize::try_from(self.next() % (len as u64)).unwrap_or(0);
-        if lines[idx] == avoid && len > 1 {
-            lines[(idx + 1) % len]
-        } else {
-            lines[idx]
-        }
+fn pick_line(lines: &[&'static str], avoid: &str) -> &'static str {
+    let len = lines.len();
+    let idx = usize::try_from(random_u64() % (len as u64)).unwrap_or(0);
+    if lines[idx] == avoid && len > 1 {
+        lines[(idx + 1) % len]
+    } else {
+        lines[idx]
     }
 }
 
@@ -124,7 +105,6 @@ pub struct Pet {
     last_stat_change: Instant,
     next_chatter: Instant,
     born: Instant,
-    rng: Rng,
 }
 
 impl Pet {
@@ -143,7 +123,6 @@ impl Pet {
             last_stat_change: now,
             next_chatter: now + Duration::from_secs(10),
             born: now,
-            rng: Rng::from_clock(),
         }
     }
 
@@ -267,9 +246,9 @@ impl Pet {
             Mood::Sad => SAD_LINES,
             _ => IDLE_LINES,
         };
-        let line = self.rng.pick(lines, self.speech);
+        let line = pick_line(lines, self.speech);
         self.say(line);
-        let jitter = self.rng.next() % CHATTER_JITTER_SECS;
+        let jitter = random_u64() % CHATTER_JITTER_SECS;
         self.next_chatter = now + Duration::from_secs(CHATTER_MIN_SECS + jitter);
     }
 
@@ -287,7 +266,7 @@ impl Pet {
 
         self.energy.add(18);
         self.happiness.add(4);
-        let line = self.rng.pick(SNACK_LINES, self.speech);
+        let line = pick_line(SNACK_LINES, self.speech);
         self.react(Mood::Eating, Duration::from_millis(2500), line, now);
     }
 
@@ -296,7 +275,7 @@ impl Pet {
         let line = if self.happiness.is_full() {
             "maximum crab joy achieved!!"
         } else {
-            self.rng.pick(PET_LINES, self.speech)
+            pick_line(PET_LINES, self.speech)
         };
         self.react(Mood::Loved, Duration::from_secs(3), line, now);
     }
@@ -316,11 +295,11 @@ impl Pet {
         let line = match mode {
             Mode::Encrypt => {
                 self.sealed = self.sealed.saturating_add(1);
-                self.rng.pick(SEALED_LINES, self.speech)
+                pick_line(SEALED_LINES, self.speech)
             }
             Mode::Decrypt => {
                 self.opened = self.opened.saturating_add(1);
-                self.rng.pick(OPENED_LINES, self.speech)
+                pick_line(OPENED_LINES, self.speech)
             }
         };
         self.react(Mood::Happy, Duration::from_secs(4), line, now);
@@ -328,7 +307,7 @@ impl Pet {
 
     pub fn work_failed(&mut self, now: Instant) {
         self.happiness.sub(8);
-        let line = self.rng.pick(OOPS_LINES, self.speech);
+        let line = pick_line(OOPS_LINES, self.speech);
         self.react(Mood::Startled, Duration::from_secs(4), line, now);
     }
 }

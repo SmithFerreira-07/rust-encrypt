@@ -2,7 +2,7 @@
 name = "rust-encrypt"
 version = "0.1.0"
 edition = "2024"
-description = "minimal file encryption cli built around a pluggable cipher core"
+description = "minimal file encryption cli"
 
 [dependencies]
 aes-gcm = "0.10"

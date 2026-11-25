@@ -2,7 +2,8 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::cipher::wipe;
+use zeroize::Zeroizing;
+
 use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +17,7 @@ pub struct Command {
     pub mode: Mode,
     pub input: PathBuf,
     pub output: PathBuf,
-    pub passphrase: String,
+    pub passphrase: Zeroizing<String>,
 }
 
 impl fmt::Debug for Command {
@@ -28,14 +29,6 @@ impl fmt::Debug for Command {
             .field("output", &self.output)
             .field("passphrase", &"[redacted]")
             .finish()
-    }
-}
-
-impl Drop for Command {
-    // zeroes passphrase bytes before releasing command memory
-    fn drop(&mut self) {
-        let mut bytes = std::mem::take(&mut self.passphrase).into_bytes();
-        wipe(&mut bytes);
     }
 }
 
@@ -118,7 +111,7 @@ where
         mode,
         input: PathBuf::from(input),
         output: PathBuf::from(output),
-        passphrase,
+        passphrase: Zeroizing::new(passphrase),
     }))
 }
 
@@ -166,7 +159,7 @@ mod tests {
                 mode: Mode::Encrypt,
                 input: PathBuf::from("in.txt"),
                 output: PathBuf::from("out.renc"),
-                passphrase: "secret".into(),
+                passphrase: Zeroizing::new("secret".into()),
             })
         );
     }
@@ -207,7 +200,7 @@ mod tests {
             mode: Mode::Encrypt,
             input: PathBuf::from("in.txt"),
             output: PathBuf::from("out.renc"),
-            passphrase: "super-secret-value".into(),
+            passphrase: Zeroizing::new("super-secret-value".into()),
         };
 
         let formatted = format!("{cmd:?}");

@@ -297,13 +297,9 @@ fn render_status_line(frame: &mut Frame, area: Rect, app: &App) {
         let idx = usize::try_from(app.tick % SPINNER_FRAMES.len() as u64).unwrap_or(0);
         let spinner = SPINNER_FRAMES[idx];
         let bar = loading_bar(app.tick, LOADING_BAR_WIDTH);
-        let stage = if secs < 0.25 {
-            "argon2id kdf"
-        } else {
-            match app.form.mode {
-                Mode::Encrypt => "aes-256-gcm seal",
-                Mode::Decrypt => "aes-256-gcm open",
-            }
+        let stage = match app.form.mode {
+            Mode::Encrypt => "encrypting",
+            Mode::Decrypt => "decrypting",
         };
 
         Line::from(vec![
