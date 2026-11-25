@@ -2,8 +2,7 @@ use std::env;
 use std::process::ExitCode;
 
 use rust_encrypt::cli::{Action, parse_args, usage};
-use rust_encrypt::run;
-use rust_encrypt::tui;
+use rust_encrypt::{Mode, decrypt_file, encrypt_file, tui};
 
 // wires process arguments into the library pipeline and translates errors to exit codes
 fn main() -> ExitCode {
@@ -13,7 +12,10 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Ok(Action::Tui) => tui::launch(),
-        Ok(Action::Run(cmd)) => run(&cmd),
+        Ok(Action::Run(cmd)) => match cmd.mode() {
+            Mode::Encrypt => encrypt_file(cmd.input(), cmd.output(), cmd.passphrase().as_bytes()),
+            Mode::Decrypt => decrypt_file(cmd.input(), cmd.output(), cmd.passphrase().as_bytes()),
+        },
         Err(err) => {
             eprintln!("error: {err}\n\n{}", usage());
             return ExitCode::FAILURE;

@@ -17,7 +17,6 @@ mod view;
 use app::App;
 
 const TICK_RATE: Duration = Duration::from_millis(80);
-const INLINE_HEIGHT: u16 = 15;
 
 struct RawModeGuard;
 
@@ -41,7 +40,7 @@ pub fn launch() -> Result<()> {
     let mut terminal = Terminal::with_options(
         backend,
         TerminalOptions {
-            viewport: Viewport::Inline(INLINE_HEIGHT),
+            viewport: Viewport::Inline(view::INLINE_HEIGHT),
         },
     )?;
 

@@ -6,12 +6,21 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::cli::Mode;
+use crate::Mode;
 
 use super::app::{App, Focus, Status};
 use super::ferris;
 use super::pet::Stat;
 use super::theme::{self, BLUSH_PINK, MINT_GREEN, MUTED_GRAY, RUST_ORANGE, SOFT_ROSE, WARM_AMBER};
+
+const BORDER_ROWS: u16 = 2;
+const DIVIDER_ROWS: u16 = 1;
+const FORM_ROWS: u16 = 4;
+const STATUS_ROWS: u16 = 1;
+const HINT_ROWS: u16 = 1;
+
+pub const INLINE_HEIGHT: u16 =
+    BORDER_ROWS + ferris::ART_HEIGHT + DIVIDER_ROWS + FORM_ROWS + STATUS_ROWS + HINT_ROWS;
 
 const MAX_WIDTH: u16 = 78;
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -53,10 +62,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(ferris::ART_HEIGHT), // ferris + speech + stats
-            Constraint::Length(1),                  // divider
-            Constraint::Length(4),                  // mode, input, output, key
-            Constraint::Length(1),                  // status / loading bar
-            Constraint::Length(1),                  // key hints
+            Constraint::Length(DIVIDER_ROWS),       // divider
+            Constraint::Length(FORM_ROWS),          // mode, input, output, key
+            Constraint::Length(STATUS_ROWS),        // status / loading bar
+            Constraint::Length(HINT_ROWS),          // key hints
         ])
         .split(inner);
 

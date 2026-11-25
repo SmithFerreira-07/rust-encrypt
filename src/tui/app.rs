@@ -7,9 +7,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use zeroize::Zeroizing;
 
-use crate::cli::Mode;
 use crate::error::Result;
-use crate::{decrypt_file, encrypt_file};
+use crate::{Mode, decrypt_file, encrypt_file};
 
 use super::TICK_RATE;
 use super::pet::Pet;
@@ -91,10 +90,7 @@ impl Form {
                 self.input.push(ch);
                 self.sync_suggested_output();
             }
-            Focus::Output => {
-                self.output.push(ch);
-                self.output_edited = !self.output.is_empty();
-            }
+            Focus::Output => self.edit_output(|out| out.push(ch)),
             Focus::Passphrase => self.passphrase.push(ch),
             Focus::Mode => {}
         }
@@ -106,15 +102,19 @@ impl Form {
                 self.input.pop();
                 self.sync_suggested_output();
             }
-            Focus::Output => {
-                self.output.pop();
-                self.output_edited = !self.output.is_empty();
-            }
+            Focus::Output => self.edit_output(|out| {
+                out.pop();
+            }),
             Focus::Passphrase => {
                 self.passphrase.pop();
             }
             Focus::Mode => {}
         }
+    }
+
+    fn edit_output(&mut self, edit: impl FnOnce(&mut String)) {
+        edit(&mut self.output);
+        self.output_edited = !self.output.is_empty();
     }
 
     fn sync_suggested_output(&mut self) {

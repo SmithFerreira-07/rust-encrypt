@@ -1,23 +1,52 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use zeroize::Zeroizing;
 
+use crate::Mode;
 use crate::error::{Error, Result};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Encrypt,
-    Decrypt,
-}
 
 #[derive(PartialEq, Eq)]
 pub struct Command {
-    pub mode: Mode,
-    pub input: PathBuf,
-    pub output: PathBuf,
-    pub passphrase: Zeroizing<String>,
+    mode: Mode,
+    input: PathBuf,
+    output: PathBuf,
+    passphrase: Zeroizing<String>,
+}
+
+impl Command {
+    pub fn new(mode: Mode, input: PathBuf, output: PathBuf, passphrase: String) -> Result<Self> {
+        if passphrase.is_empty() {
+            return Err(Error::EmptyPassphrase);
+        }
+        Ok(Self {
+            mode,
+            input,
+            output,
+            passphrase: Zeroizing::new(passphrase),
+        })
+    }
+
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    #[must_use]
+    pub fn input(&self) -> &Path {
+        &self.input
+    }
+
+    #[must_use]
+    pub fn output(&self) -> &Path {
+        &self.output
+    }
+
+    #[must_use]
+    pub fn passphrase(&self) -> &str {
+        &self.passphrase
+    }
 }
 
 impl fmt::Debug for Command {
@@ -103,16 +132,9 @@ where
         .map_err(|_| Error::Usage("expected <input> and <output> file paths".into()))?;
 
     let passphrase = passphrase.ok_or_else(|| Error::Usage("missing --key <passphrase>".into()))?;
-    if passphrase.is_empty() {
-        return Err(Error::Usage("passphrase cannot be empty".into()));
-    }
+    let cmd = Command::new(mode, PathBuf::from(input), PathBuf::from(output), passphrase)?;
 
-    Ok(Action::Run(Command {
-        mode,
-        input: PathBuf::from(input),
-        output: PathBuf::from(output),
-        passphrase: Zeroizing::new(passphrase),
-    }))
+    Ok(Action::Run(cmd))
 }
 
 // checks whether an os argument requests the help banner

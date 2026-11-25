@@ -1,10 +1,8 @@
-use crate::cipher::NONCE_LEN;
+use crate::cipher::{NONCE_LEN, SALT_LEN, TAG_LEN};
 use crate::error::{Error, Result};
 
 pub const MAGIC: [u8; 4] = *b"RENC";
 pub const VERSION: u8 = 2;
-pub const SALT_LEN: usize = 16;
-pub const TAG_LEN: usize = 16;
 
 const VERSION_OFFSET: usize = MAGIC.len();
 const SALT_OFFSET: usize = VERSION_OFFSET + 1;
@@ -25,12 +23,15 @@ pub struct Envelope {
 impl Envelope {
     // packs version metadata, salt, and nonce for header authentication
     #[must_use]
-    pub fn authenticated_header(&self) -> [u8; HEADER_PREFIX_LEN] {
+    pub fn authenticated_header(
+        salt: &[u8; SALT_LEN],
+        nonce: &[u8; NONCE_LEN],
+    ) -> [u8; HEADER_PREFIX_LEN] {
         let mut out = [0u8; HEADER_PREFIX_LEN];
         out[..VERSION_OFFSET].copy_from_slice(&MAGIC);
         out[VERSION_OFFSET] = VERSION;
-        out[SALT_OFFSET..NONCE_OFFSET].copy_from_slice(&self.salt);
-        out[NONCE_OFFSET..TAG_OFFSET].copy_from_slice(&self.nonce);
+        out[SALT_OFFSET..NONCE_OFFSET].copy_from_slice(salt);
+        out[NONCE_OFFSET..TAG_OFFSET].copy_from_slice(nonce);
         out
     }
 
@@ -38,7 +39,7 @@ impl Envelope {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + self.payload.len());
-        out.extend_from_slice(&self.authenticated_header());
+        out.extend_from_slice(&Self::authenticated_header(&self.salt, &self.nonce));
         out.extend_from_slice(&self.tag);
         out.extend_from_slice(&self.payload);
         out

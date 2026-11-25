@@ -8,6 +8,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     Io(io::Error),
     Usage(String),
+    EmptyPassphrase,
     InvalidFormat(&'static str),
     AuthenticationFailed,
     MessageTooLarge,
@@ -20,6 +21,7 @@ impl fmt::Display for Error {
         match self {
             Self::Io(err) => write!(f, "io error: {err}"),
             Self::Usage(msg) => write!(f, "usage error: {msg}"),
+            Self::EmptyPassphrase => write!(f, "passphrase cannot be empty"),
             Self::InvalidFormat(msg) => write!(f, "invalid file format: {msg}"),
             Self::AuthenticationFailed => {
                 write!(f, "authentication failed: wrong key or corrupted file")

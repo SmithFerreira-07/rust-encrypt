@@ -6,10 +6,11 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{Error, Result};
-use crate::format::{SALT_LEN, TAG_LEN};
 
 pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
+pub const SALT_LEN: usize = 16;
+pub const TAG_LEN: usize = 16;
 
 // owasp-aligned argon2id parameters: 64 mib memory, 3 iterations, 1 lane
 const ARGON2_MEMORY_KIB: u32 = 64 * 1024;
@@ -64,6 +65,10 @@ pub(crate) fn derive_key(
     passphrase: &[u8],
     salt: &[u8; SALT_LEN],
 ) -> Result<Zeroizing<[u8; KEY_LEN]>> {
+    if passphrase.is_empty() {
+        return Err(Error::EmptyPassphrase);
+    }
+
     let params = Params::new(
         ARGON2_MEMORY_KIB,
         ARGON2_ITERATIONS,

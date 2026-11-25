@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::cli::Mode;
+use crate::Mode;
 
 const SLEEP_AFTER: Duration = Duration::from_secs(45);
 const DECAY_EVERY: Duration = Duration::from_secs(12);
@@ -100,7 +100,7 @@ pub struct Pet {
     tick: u64,
     speech: &'static str,
     speech_tick: u64,
-    reaction_until: Option<Instant>,
+    reaction: Option<(Mood, Instant)>,
     last_input: Instant,
     last_stat_change: Instant,
     next_chatter: Instant,
@@ -118,7 +118,7 @@ impl Pet {
             tick: 0,
             speech: "hi! i'm ferris, your file guardian",
             speech_tick: 0,
-            reaction_until: None,
+            reaction: None,
             last_input: now,
             last_stat_change: now,
             next_chatter: now + Duration::from_secs(10),
@@ -171,7 +171,7 @@ impl Pet {
 
     fn react(&mut self, mood: Mood, duration: Duration, line: &'static str, now: Instant) {
         self.mood = mood;
-        self.reaction_until = Some(now + duration);
+        self.reaction = Some((mood, now + duration));
         self.say(line);
     }
 
@@ -187,16 +187,19 @@ impl Pet {
     pub fn update(&mut self, now: Instant, tick: u64, working: bool) {
         self.tick = tick;
 
-        let reacting = self.reaction_until.is_some_and(|until| now < until);
-        if !reacting {
-            self.reaction_until = None;
+        let active_reaction = self
+            .reaction
+            .filter(|&(_, until)| now < until)
+            .map(|(mood, _)| mood);
+        if active_reaction.is_none() {
+            self.reaction = None;
         }
 
-        let calm = !working && !reacting;
+        let calm = !working && active_reaction.is_none();
         let asleep = calm && now.saturating_duration_since(self.last_input) >= SLEEP_AFTER;
         self.tick_stats(now, asleep, working);
 
-        let next = self.resolve_mood(working, reacting, asleep);
+        let next = self.resolve_mood(working, active_reaction, asleep);
         if next != self.mood {
             self.mood = next;
             if calm {
@@ -207,11 +210,11 @@ impl Pet {
         }
     }
 
-    const fn resolve_mood(&self, working: bool, reacting: bool, asleep: bool) -> Mood {
+    const fn resolve_mood(&self, working: bool, reaction: Option<Mood>, asleep: bool) -> Mood {
         if working {
             Mood::Working
-        } else if reacting {
-            self.mood
+        } else if let Some(mood) = reaction {
+            mood
         } else if asleep {
             Mood::Sleepy
         } else if self.happiness.is_low() {
@@ -282,7 +285,7 @@ impl Pet {
 
     pub fn start_work(&mut self, mode: Mode) {
         self.mood = Mood::Working;
-        self.reaction_until = None;
+        self.reaction = None;
         self.say(match mode {
             Mode::Encrypt => "crunching argon2id + aes-256-gcm...",
             Mode::Decrypt => "verifying tag & unlocking...",

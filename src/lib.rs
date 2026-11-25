@@ -9,17 +9,14 @@ use std::path::Path;
 
 use zeroize::Zeroizing;
 
-use crate::cipher::{NONCE_LEN, derive_key, fill_random, open, seal};
-use crate::cli::{Command, Mode};
+use crate::cipher::{NONCE_LEN, SALT_LEN, derive_key, fill_random, open, seal};
 use crate::error::Result;
-use crate::format::{Envelope, SALT_LEN, TAG_LEN};
+use crate::format::Envelope;
 
-// dispatches a parsed cli command through the cipher pipeline
-pub fn run(cmd: &Command) -> Result<()> {
-    match cmd.mode {
-        Mode::Encrypt => encrypt_file(&cmd.input, &cmd.output, cmd.passphrase.as_bytes()),
-        Mode::Decrypt => decrypt_file(&cmd.input, &cmd.output, cmd.passphrase.as_bytes()),
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Encrypt,
+    Decrypt,
 }
 
 // reads plaintext from disk, seals it into an envelope, and writes the result
@@ -54,16 +51,14 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
     fill_random(&mut nonce)?;
 
     let derived = derive_key(passphrase, &salt)?;
-    let mut envelope = Envelope {
+    let header = Envelope::authenticated_header(&salt, &nonce);
+    let (payload, tag) = seal(&derived, &nonce, &header, plaintext)?;
+    let envelope = Envelope {
         salt,
         nonce,
-        tag: [0u8; TAG_LEN],
-        payload: Vec::new(),
+        tag,
+        payload,
     };
-    let header = envelope.authenticated_header();
-    let (payload, tag) = seal(&derived, &nonce, &header, plaintext)?;
-    envelope.payload = payload;
-    envelope.tag = tag;
 
     Ok(envelope.encode())
 }
@@ -72,7 +67,7 @@ pub fn encrypt_bytes(plaintext: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
 pub fn decrypt_bytes(raw: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
     let envelope = Envelope::decode(raw)?;
     let derived = derive_key(passphrase, &envelope.salt)?;
-    let header = envelope.authenticated_header();
+    let header = Envelope::authenticated_header(&envelope.salt, &envelope.nonce);
 
     open(
         &derived,
@@ -124,5 +119,12 @@ mod tests {
 
         let err = decrypt_bytes(&sealed, b"right-key").unwrap_err();
         assert!(matches!(err, Error::AuthenticationFailed));
+    }
+
+    // checks that empty passphrases are rejected at the library boundary
+    #[test]
+    fn rejects_empty_passphrase() {
+        let err = encrypt_bytes(b"payload", b"").unwrap_err();
+        assert!(matches!(err, Error::EmptyPassphrase));
     }
 }
