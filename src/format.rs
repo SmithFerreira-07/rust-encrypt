@@ -5,7 +5,13 @@ pub const MAGIC: [u8; 4] = *b"RENC";
 pub const VERSION: u8 = 2;
 pub const SALT_LEN: usize = 16;
 pub const TAG_LEN: usize = 16;
-pub const HEADER_PREFIX_LEN: usize = 4 + 1 + SALT_LEN + NONCE_LEN;
+
+const VERSION_OFFSET: usize = MAGIC.len();
+const SALT_OFFSET: usize = VERSION_OFFSET + 1;
+const NONCE_OFFSET: usize = SALT_OFFSET + SALT_LEN;
+const TAG_OFFSET: usize = NONCE_OFFSET + NONCE_LEN;
+
+pub const HEADER_PREFIX_LEN: usize = TAG_OFFSET;
 pub const HEADER_LEN: usize = HEADER_PREFIX_LEN + TAG_LEN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,10 +27,10 @@ impl Envelope {
     #[must_use]
     pub fn authenticated_header(&self) -> [u8; HEADER_PREFIX_LEN] {
         let mut out = [0u8; HEADER_PREFIX_LEN];
-        out[0..4].copy_from_slice(&MAGIC);
-        out[4] = VERSION;
-        out[5..21].copy_from_slice(&self.salt);
-        out[21..33].copy_from_slice(&self.nonce);
+        out[..VERSION_OFFSET].copy_from_slice(&MAGIC);
+        out[VERSION_OFFSET] = VERSION;
+        out[SALT_OFFSET..NONCE_OFFSET].copy_from_slice(&self.salt);
+        out[NONCE_OFFSET..TAG_OFFSET].copy_from_slice(&self.nonce);
         out
     }
 
@@ -44,11 +50,11 @@ impl Envelope {
             return Err(Error::InvalidFormat("file is shorter than header"));
         }
 
-        if bytes[0..4] != MAGIC {
+        if bytes[..VERSION_OFFSET] != MAGIC {
             return Err(Error::InvalidFormat("unrecognized file magic"));
         }
 
-        if bytes[4] != VERSION {
+        if bytes[VERSION_OFFSET] != VERSION {
             return Err(Error::InvalidFormat("unsupported envelope version"));
         }
 
@@ -56,9 +62,9 @@ impl Envelope {
         let mut nonce = [0u8; NONCE_LEN];
         let mut tag = [0u8; TAG_LEN];
 
-        salt.copy_from_slice(&bytes[5..21]);
-        nonce.copy_from_slice(&bytes[21..33]);
-        tag.copy_from_slice(&bytes[33..HEADER_LEN]);
+        salt.copy_from_slice(&bytes[SALT_OFFSET..NONCE_OFFSET]);
+        nonce.copy_from_slice(&bytes[NONCE_OFFSET..TAG_OFFSET]);
+        tag.copy_from_slice(&bytes[TAG_OFFSET..HEADER_LEN]);
 
         Ok(Self {
             salt,

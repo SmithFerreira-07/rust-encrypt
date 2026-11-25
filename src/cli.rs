@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -42,6 +42,7 @@ impl Drop for Command {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     Run(Command),
+    Tui,
     Help,
 }
 
@@ -55,11 +56,24 @@ where
     let _program = iter.next();
 
     let Some(first) = iter.next() else {
-        return Ok(Action::Help);
+        return Ok(Action::Tui);
     };
 
     if is_help_flag(&first) {
         return Ok(Action::Help);
+    }
+
+    if first == "tui" {
+        if let Some(extra) = iter.next() {
+            if is_help_flag(&extra) {
+                return Ok(Action::Help);
+            }
+            return Err(Error::Usage(format!(
+                "unexpected argument for tui: {}",
+                extra.to_string_lossy()
+            )));
+        }
+        return Ok(Action::Tui);
     }
 
     let mode = parse_mode(&first)?;
@@ -109,12 +123,12 @@ where
 }
 
 // checks whether an os argument requests the help banner
-fn is_help_flag(arg: &OsString) -> bool {
+fn is_help_flag(arg: &OsStr) -> bool {
     arg == "-h" || arg == "--help"
 }
 
 // maps the subcommand token onto the internal operation mode
-fn parse_mode(token: &OsString) -> Result<Mode> {
+fn parse_mode(token: &OsStr) -> Result<Mode> {
     match token.to_str() {
         Some("encrypt") => Ok(Mode::Encrypt),
         Some("decrypt") => Ok(Mode::Decrypt),
@@ -126,7 +140,7 @@ fn parse_mode(token: &OsString) -> Result<Mode> {
 // returns the static help banner rendered by the entrypoint
 #[must_use]
 pub const fn usage() -> &'static str {
-    "usage:\n  rust-encrypt encrypt <input> <output> --key <passphrase>\n  rust-encrypt decrypt <input> <output> --key <passphrase>"
+    "usage:\n  rust-encrypt [tui]\n  rust-encrypt encrypt <input> <output> --key <passphrase>\n  rust-encrypt decrypt <input> <output> --key <passphrase>"
 }
 
 #[cfg(test)]
@@ -169,6 +183,21 @@ mod tests {
     fn returns_help_action() {
         let action = parse_args(["rust-encrypt", "--help"]).unwrap();
         assert_eq!(action, Action::Help);
+    }
+
+    // checks that running with no arguments or `tui` launches the TUI
+    #[test]
+    fn launches_tui_for_empty_or_tui_subcommand() {
+        assert_eq!(parse_args(["rust-encrypt"]).unwrap(), Action::Tui);
+        assert_eq!(parse_args(["rust-encrypt", "tui"]).unwrap(), Action::Tui);
+        assert_eq!(
+            parse_args(["rust-encrypt", "tui", "--help"]).unwrap(),
+            Action::Help
+        );
+        assert!(matches!(
+            parse_args(["rust-encrypt", "tui", "extra"]),
+            Err(Error::Usage(_))
+        ));
     }
 
     // checks that debug formatting never exposes the passphrase

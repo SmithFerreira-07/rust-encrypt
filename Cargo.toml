@@ -7,5 +7,7 @@ description = "minimal file encryption cli built around a pluggable cipher core"
 [dependencies]
 aes-gcm = "0.10"
 argon2 = "0.5"
+crossterm = "0.28"
 getrandom = "0.3"
+ratatui = "0.29"
 zeroize = "1"

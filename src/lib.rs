@@ -2,6 +2,7 @@ pub mod cipher;
 pub mod cli;
 pub mod error;
 mod format;
+pub mod tui;
 
 use std::fs;
 use std::path::Path;
